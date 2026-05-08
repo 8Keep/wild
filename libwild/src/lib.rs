@@ -41,6 +41,11 @@ pub(crate) mod output_section_part_map;
 pub(crate) mod output_trace;
 pub(crate) mod parsing;
 pub(crate) mod part_id;
+pub(crate) mod pe_layout;
+pub(crate) mod pe_link;
+pub(crate) mod pe_object;
+pub(crate) mod pe_reloc;
+pub(crate) mod pe_writer;
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
@@ -146,7 +151,7 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
 /// pages) will still happen anyway.
 pub struct Linker {
     /// We store our input files here once we've read them.
-    inputs_arena: Arena<InputFile>,
+    pub(crate) inputs_arena: Arena<InputFile>,
 
     linker_plugin_arena: Arena<linker_plugins::LoadedPlugin>,
 
@@ -216,6 +221,10 @@ impl Linker {
         match args {
             Args::Elf(elf_args) => Elf::link_for_arch(self, elf_args),
             Args::MachO(macho_args) => MachO::link_for_arch(self, macho_args),
+            Args::Pe(pe_args) => {
+                pe_link::link_pe(self, pe_args)?;
+                Ok(LinkerOutput { layout: None })
+            }
             Args::Wasm(wasm_args) => crate::wasm::Wasm::link_for_arch(self, wasm_args),
         }
     }

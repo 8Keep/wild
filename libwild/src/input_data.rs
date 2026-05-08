@@ -86,11 +86,11 @@ pub(crate) struct InputFile {
     pub(crate) filename: PathBuf,
 
     /// The filename prior to path search. If this is absolute, then `filename` will be the same.
-    original_filename: PathBuf,
+    pub(crate) original_filename: PathBuf,
 
     pub(crate) modifiers: Modifiers,
 
-    data: Option<FileData>,
+    pub(crate) data: Option<FileData>,
 }
 
 #[derive(Debug)]
@@ -707,7 +707,11 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
             })));
         }
 
-        if input_ref.is_archive_entry() && kind != FileKind::ElfObject {
+        if input_ref.is_archive_entry()
+            && kind != FileKind::ElfObject
+            && kind != FileKind::CoffObject
+            && kind != FileKind::CoffImport
+        {
             bail!("Unexpected archive member of kind {kind:?}: {input_ref}");
         }
 

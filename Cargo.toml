@@ -67,6 +67,7 @@ object = { version = "0.39.1", default-features = false, features = [
     "compression",
     "elf",
     "macho",
+    "pe",
     "read_core",
     "std",
     "unaligned",

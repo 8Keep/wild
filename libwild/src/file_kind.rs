@@ -18,6 +18,8 @@ pub(crate) enum FileKind {
     ElfObject,
     ElfDynamic,
     MachOObject,
+    CoffObject,
+    CoffImport,
     WasmObject,
     Archive,
     ThinArchive,
@@ -73,6 +75,12 @@ impl FileKind {
                 "Expected object file"
             );
             Ok(FileKind::MachOObject)
+        } else if let Ok(kind) = object::FileKind::parse(bytes) {
+            match kind {
+                object::FileKind::Coff | object::FileKind::CoffBig => Ok(FileKind::CoffObject),
+                object::FileKind::CoffImport => Ok(FileKind::CoffImport),
+                _ => bail!("Couldn't identify file type"),
+            }
         } else if bytes.starts_with(b"\0asm") {
             // Wasm binary magic number is `\0asm` followed by a 4-byte version.
             ensure!(bytes.len() >= 8, "Invalid Wasm file (too short)");
@@ -124,6 +132,8 @@ impl std::fmt::Display for FileKind {
             FileKind::ElfObject => "ELF object",
             FileKind::ElfDynamic => "ELF dynamic",
             FileKind::MachOObject => "MachO object",
+            FileKind::CoffObject => "COFF object",
+            FileKind::CoffImport => "COFF import",
             FileKind::WasmObject => "Wasm object",
             FileKind::Archive => "archive",
             FileKind::ThinArchive => "thin archive",
