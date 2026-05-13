@@ -1,6 +1,7 @@
 # linker-diff
 
-Linker-diff is a command-line utility that diffs two ELF binaries (shared objects or executables).
+Linker-diff is a command-line utility that diffs binaries produced by different linkers.
+ELF has the most complete support. PE64 has a smaller semantic comparison path.
 At least one of the binaries being diffed needs layout information as can optionally be produced by
 the Wild linker.
 

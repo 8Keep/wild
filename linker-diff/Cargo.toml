@@ -1,6 +1,6 @@
 [package]
 name = "linker-diff"
-description = "Diffs and validates ELF binaries"
+description = "Diffs and validates linker outputs"
 version.workspace = true
 license.workspace = true
 repository.workspace = true

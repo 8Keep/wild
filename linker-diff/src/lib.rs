@@ -45,6 +45,7 @@ mod gnu_hash;
 mod header_diff;
 mod init_order;
 mod loongarch64;
+mod pe_diff;
 mod riscv64;
 mod riscv_attributes;
 pub(crate) mod section_map;
@@ -603,6 +604,24 @@ impl Report {
             .all(|kind| *kind == object::FileKind::Elf64)
         {
             return elf_diff::report_from_config(config, inputs);
+        }
+        if file_kinds
+            .iter()
+            .all(|kind| *kind == object::FileKind::Pe64)
+        {
+            return pe_diff::report_from_config(config, inputs);
+        }
+        if file_kinds
+            .iter()
+            .any(|kind| *kind == object::FileKind::Pe32)
+        {
+            bail!("PE32 linker-diff support is not implemented yet");
+        }
+        if file_kinds
+            .iter()
+            .any(|kind| *kind == object::FileKind::Pe64)
+        {
+            bail!("Cannot compare PE files with non-PE files");
         }
 
         let formats = file_kinds.iter().map(|kind| format!("{kind:?}")).join(", ");
