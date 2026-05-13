@@ -40,6 +40,7 @@ mod asm_diff;
 mod debug_info_diff;
 mod diagnostics;
 mod eh_frame_diff;
+mod elf_diff;
 mod gnu_hash;
 mod header_diff;
 mod init_order;
@@ -60,7 +61,7 @@ type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
 type ElfSymbol64<'data, 'file> = object::read::elf::ElfSymbol64<'data, 'file, LittleEndian>;
 
-use arch::Arch;
+pub(crate) use arch::Arch;
 use arch::ArchKind;
 use colored::Colorize;
 pub use diagnostics::enable_diagnostics;
@@ -516,28 +517,6 @@ enum NameLookupResult<'data, 'file> {
     Defined(ElfSymbol64<'data, 'file>),
 }
 
-fn validate_objects(
-    report: &mut Report,
-    objects: &[Binary],
-    validation_name: &str,
-    validation_fn: impl Fn(&Binary) -> Result,
-) {
-    let values = objects
-        .iter()
-        .map(|obj| match validation_fn(obj) {
-            Ok(_) => "OK".to_owned(),
-            Err(e) => e.to_string(),
-        })
-        .collect_vec();
-    if first_equals_any(values.iter()) {
-        return;
-    }
-    report.add_diff(Diff {
-        key: validation_name.to_owned(),
-        values: DiffValues::PerObject(values),
-    });
-}
-
 pub struct Report {
     /// The names of each of our binaries. These should be short, not a full path, since we often
     /// prefix lines with these names.
@@ -574,19 +553,14 @@ struct SectionCoverage {
     num_bytes: u64,
 }
 
-impl Report {
-    pub fn from_config(mut config: Config) -> Result<Report> {
-        // This changes mutable global state, which isn't an ideal thing to be doing from a library.
-        // It's expedient though, and we don't really expect linker-diff to get used as a library
-        // anywhere except the linker-diff binary and wild's integration tests, so this probably
-        // isn't a big deal.
-        match config.colour {
-            Colour::Auto => colored::control::unset_override(),
-            Colour::Never => colored::control::set_override(false),
-            Colour::Always => colored::control::set_override(true),
-        }
+pub(crate) struct LoadedInputs {
+    pub(crate) display_names: Vec<String>,
+    pub(crate) file_bytes: Vec<Vec<u8>>,
+}
 
-        let display_names = short_file_display_names(&config)?;
+impl LoadedInputs {
+    fn read(config: &Config) -> Result<Self> {
+        let display_names = short_file_display_names(config)?;
 
         let file_bytes = config
             .filenames()
@@ -597,113 +571,58 @@ impl Report {
             })
             .collect::<Result<Vec<Vec<u8>>>>()?;
 
-        let elf_files = file_bytes
+        Ok(Self {
+            display_names,
+            file_bytes,
+        })
+    }
+
+    fn file_kinds(&self) -> Result<Vec<object::FileKind>, object::Error> {
+        self.file_bytes
             .iter()
-            .map(|bytes| -> Result<ElfFile64> { Ok(ElfFile64::parse(bytes.as_slice())?) })
-            .collect::<Result<Vec<_>>>()?;
-
-        let layouts = config
-            .filenames()
-            .map(|p| LayoutAndFiles::from_base_path(p))
-            .collect::<Result<Vec<_>>>()?;
-
-        let objects = elf_files
-            .iter()
-            .zip(display_names)
-            .zip(config.filenames())
-            .zip(&layouts)
-            .map(|(((elf_file, name), path), layout)| -> Result<Binary> {
-                Binary::new(elf_file, name, path.clone(), layout.as_ref())
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        if objects.len() < 2 {
-            bail!("At least two files must be provided for comparison");
+            .map(|bytes| object::FileKind::parse(bytes.as_slice()))
+            .collect()
+    }
+}
+impl Report {
+    pub fn from_config(config: Config) -> Result<Report> {
+        // This changes mutable global state, which isn't an ideal thing to be doing from a library.
+        // It's expedient though, and we don't really expect linker-diff to get used as a library
+        // anywhere except the linker-diff binary and wild's integration tests, so this probably
+        // isn't a big deal.
+        match config.colour {
+            Colour::Auto => colored::control::unset_override(),
+            Colour::Never => colored::control::set_override(false),
+            Colour::Always => colored::control::set_override(true),
         }
 
-        let arch = ArchKind::from_objects(&objects)?;
-
-        if config.wild_defaults {
-            config.apply_wild_defaults(arch);
+        let inputs = LoadedInputs::read(&config)?;
+        let file_kinds = inputs.file_kinds()?;
+        if file_kinds
+            .iter()
+            .all(|kind| *kind == object::FileKind::Elf64)
+        {
+            return elf_diff::report_from_config(config, inputs);
         }
 
-        let mut report = Report {
-            names: objects.iter().map(|o| o.name.clone()).collect(),
-            paths: objects.iter().map(|o| o.path.clone()).collect(),
+        let formats = file_kinds.iter().map(|kind| format!("{kind:?}")).join(", ");
+        bail!("Unsupported input file format(s): {formats}");
+    }
+
+    fn new(
+        config: Config,
+        names: Vec<String>,
+        paths: Vec<PathBuf>,
+        coverage: Option<Coverage>,
+    ) -> Self {
+        Self {
+            names,
+            paths,
             diffs: Default::default(),
-            coverage: config.coverage.then(Coverage::default),
             config,
-        };
-
-        report.run_on_objects(&objects, arch);
-
-        Ok(report)
-    }
-
-    fn run_on_objects(&mut self, objects: &[Binary], arch: ArchKind) {
-        validate_objects(
-            self,
-            objects,
-            GNU_HASH_SECTION_NAME_STR,
-            gnu_hash::check_object,
-        );
-        validate_objects(
-            self,
-            objects,
-            HASH_SECTION_NAME_STR,
-            sysv_hash::check_object,
-        );
-        validate_objects(self, objects, "index", asm_diff::validate_indexes);
-        validate_objects(
-            self,
-            objects,
-            GOT_PLT_SECTION_NAME_STR,
-            asm_diff::validate_got_plt,
-        );
-        validate_objects(
-            self,
-            objects,
-            SYMTAB_SECTION_NAME_STR,
-            symtab::validate_debug,
-        );
-        validate_objects(
-            self,
-            objects,
-            DYNSYM_SECTION_NAME_STR,
-            symtab::validate_dynamic,
-        );
-        header_diff::check_dynamic_headers(self, objects);
-        header_diff::check_file_headers(self, objects);
-        header_diff::report_section_diffs(self, objects);
-        eh_frame_diff::report_diffs(self, objects);
-        version_diff::report_diffs(self, objects);
-        debug_info_diff::check_debug_info(self, objects);
-        symbol_diff::report_diffs(self, objects);
-        segment::report_diffs(self, objects);
-
-        match arch {
-            ArchKind::X86_64 => {
-                self.report_arch_specific_diffs::<crate::x86_64::X86_64>(objects);
-            }
-            ArchKind::Aarch64 => {
-                self.report_arch_specific_diffs::<crate::aarch64::AArch64>(objects);
-            }
-
-            ArchKind::RISCV64 => {
-                self.report_arch_specific_diffs::<crate::riscv64::RiscV64>(objects);
-                riscv_attributes::report_diffs(self, objects);
-            }
-            ArchKind::LoongArch64 => {
-                self.report_arch_specific_diffs::<crate::loongarch64::LoongArch64>(objects);
-            }
+            coverage,
         }
     }
-
-    fn report_arch_specific_diffs<A: Arch>(&mut self, binaries: &[Binary]) {
-        asm_diff::report_section_diffs::<A>(self, binaries);
-        init_order::report_diffs::<A>(self, binaries);
-    }
-
     fn add_diff(&mut self, diff: Diff) {
         if self.should_ignore(&diff.key) {
             return;
